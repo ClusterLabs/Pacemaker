@@ -263,6 +263,23 @@ class FileAudit(ClusterAudit):
         self.known = []
         self.name = "FileAudit"
 
+    def _find_core_with_coredumpctl(self, node):
+        """Use coredumpctl to find core dumps on the given node."""
+        found = False
+        (_, lsout) = self._cm.rsh(node, "coredumpctl --no-legend")
+
+        for line in lsout:
+            line = line.strip()
+
+            if line in self.known:
+                continue
+
+            found = True
+            self.known.append(line)
+            self._cm.log(f"Warning: Core file on {node}: {line}")
+
+        return found
+
     def _find_core_on_fs(self, node, path, tool):
         """Check for core dumps on the given node, under the given path."""
         found = False
@@ -287,13 +304,18 @@ class FileAudit(ClusterAudit):
         self._cm.ns.wait_for_all_nodes(self._cm.env["nodes"])
 
         for node in self._cm.env["nodes"]:
-            found = self._find_core_on_fs(node, "/var/lib/pacemaker/cores/*", "Pacemaker")
-            if found:
-                result = False
+            if self._cm.env["have_systemd"]:
+                found = self._find_core_with_coredumpctl(node)
+                if found:
+                    result = False
+            else:
+                found = self._find_core_on_fs(node, "/var/lib/pacemaker/cores/*", "Pacemaker")
+                if found:
+                    result = False
 
-            found = self._find_core_on_fs(node, "/var/lib/corosync", "Corosync")
-            if found:
-                result = False
+                found = self._find_core_on_fs(node, "/var/lib/corosync", "Corosync")
+                if found:
+                    result = False
 
             if self._cm.expected_status.get(node) == "down":
                 clean = False
