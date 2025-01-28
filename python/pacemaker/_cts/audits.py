@@ -263,30 +263,59 @@ class FileAudit(ClusterAudit):
         self.known = []
         self.name = "FileAudit"
 
+    def _find_core_with_coredumpctl(self, node):
+        """Use coredumpctl to find core dumps on the given node."""
+        found = False
+        (_, lsout) = self._cm.rsh(node, "coredumpctl --no-legend")
+
+        for line in lsout:
+            line = line.strip()
+
+            if line in self.known:
+                continue
+
+            found = True
+            self.known.append(line)
+            self._cm.log(f"Warning: Core file on {node}: {line}")
+
+        return found
+
+    def _find_core_on_fs(self, node, path, tool):
+        """Check for core dumps on the given node, under the given path."""
+        found = False
+        (_, lsout) = self._cm.rsh(node, f"ls -al {path} | grep core.[0-9]", verbose=1)
+
+        for line in lsout:
+            line = line.strip()
+
+            if line in self.known:
+                continue
+
+            found = True
+            self.known.append(line)
+            self._cm.log(f"Warning: {tool} core file on {node}: {line}")
+
+        return found
+
     def __call__(self):
         """Perform the audit action."""
         result = True
 
         self._cm.ns.wait_for_all_nodes(self._cm.env["nodes"])
+
         for node in self._cm.env["nodes"]:
-
-            (_, lsout) = self._cm.rsh(node, "ls -al /var/lib/pacemaker/cores/* | grep core.[0-9]", verbose=1)
-            for line in lsout:
-                line = line.strip()
-
-                if line not in self.known:
+            if self._cm.env["have_systemd"]:
+                found = self._find_core_with_coredumpctl(node)
+                if found:
                     result = False
-                    self.known.append(line)
-                    self._cm.log(f"Warning: Pacemaker core file on {node}: {line}")
-
-            (_, lsout) = self._cm.rsh(node, "ls -al /var/lib/corosync | grep core.[0-9]", verbose=1)
-            for line in lsout:
-                line = line.strip()
-
-                if line not in self.known:
+            else:
+                found = self._find_core_on_fs(node, "/var/lib/pacemaker/cores/*", "Pacemaker")
+                if found:
                     result = False
-                    self.known.append(line)
-                    self._cm.log(f"Warning: Corosync core file on {node}: {line}")
+
+                found = self._find_core_on_fs(node, "/var/lib/corosync", "Corosync")
+                if found:
+                    result = False
 
             if self._cm.expected_status.get(node) == "down":
                 clean = False
